@@ -20,20 +20,20 @@ static const char* WIFI_PASS = "2284201337";
 static const char* MQTT_HOST = "192.168.1.195";
 static const uint16_t MQTT_PORT = 1883;
 
-// RF433 (как у тебя)
+// RF433
 static const int RF_RX_PIN = 27;
 static const int RF_TX_PIN = 26;
 
-// Реле (как у тебя)
+// Реле
 static const int RELAY1_PIN = 13;
 static const int RELAY2_PIN = 14;
 static const int RELAY3_PIN = 25;
 static const int RELAY4_PIN = 33;
 
-// Спикер (как у тебя)
+// Спикер
 static const int BUZZER_PIN = 32;
 
-// Кнопки (старые ADC) (как у тебя)
+// Кнопки (старые ADC) 
 static const int PIN_A = 34; // кнопки 1..3
 static const int PIN_B = 35; // кнопки 4..6
 
@@ -44,7 +44,7 @@ static const int PIN_C = 39; // кнопки 7..12
 static const int PSU_TEMP_PIN = 21;
 
 // -----------------------------------------------------
-// MQTT топики (монитор/яркость/реле/спикер) — НЕ МЕНЯЮ
+// MQTT топики (монитор/яркость/реле/спикер) 
 // -----------------------------------------------------
 
 // Монитор данные
@@ -56,11 +56,11 @@ static const char* T_MP_TEMP = "esp32panel/proxmox/temp";
 static const char* T_MP_CPU  = "esp32panel/proxmox/cpu";
 static const char* T_MP_RAM  = "esp32panel/proxmox/ram";
 
-// Яркость (не меняю)
+// Яркость
 static const char* T_BRIGHT_SET   = "esp32panel/screen/brightness/set";
 static const char* T_BRIGHT_STATE = "esp32panel/screen/brightness/state";
 
-// Реле (не меняю)
+// Реле 
 static const char* T_RELAY1_SET   = "esp32panel/relay/1/set";
 static const char* T_RELAY2_SET   = "esp32panel/relay/2/set";
 static const char* T_RELAY3_SET   = "esp32panel/relay/3/set";
@@ -71,36 +71,36 @@ static const char* T_RELAY2_STATE = "esp32panel/relay/2/state";
 static const char* T_RELAY3_STATE = "esp32panel/relay/3/state";
 static const char* T_RELAY4_STATE = "esp32panel/relay/4/state";
 
-// Спикер топик (твой!)
+// Спикер топик 
 static const char* T_SPK_PLAY = "esp32panel/speaker/play";
 
 // Таймауты (онлайн по данным)
 static const uint32_t DATA_TIMEOUT_MS = 60000;
 
 // -----------------------------------------------------
-// MQTT топики RF433 — КАК В ТВОЁМ radio.txt (НЕ МЕНЯЮ)
+// MQTT топики RF433 — КАК В ТВОЁМ radio.txt 
 // -----------------------------------------------------
 static const char* TOPIC_TX       = "rf433/tx";
 static const char* TOPIC_STATUS   = "rf433/status";
 static const char* TOPIC_LAST     = "rf433/last_code";
 static const char* TOPIC_LAST_RAW = "rf433/last_code_raw";
 
-// отдельная команда hold97 (не меняю)
+// отдельная команда hold97 
 static const char* TOPIC_HOLD97   = "rf433/tx_hold97";
 
-// RF protocol settings (твои)
+// RF protocol settings 
 static const int RF_PROTOCOL = 1;
 static const int RF_PULSE    = 389;
 static const int RF_BITS     = 24;
 
-// 8 кодов-триггеров (твои)
+// 8 кодов-триггеров 
 static const uint32_t TRIGGERS[] = {
   1382424, 1382420, 1382428, 1382418,
   1382426, 1382422, 1382423, 1382431
 };
 static const int TRIGGERS_N = sizeof(TRIGGERS) / sizeof(TRIGGERS[0]);
 
-// 21 код подсветки (твои)
+// 21 код подсветки 
 static const uint32_t LIGHTS[] = {
   9348097, 9348098, 9348099, 9348100, 9348101, 9348102, 9348103,
   9348104, 9348105, 9348106, 9348107, 9348108, 9348109, 9348110,
@@ -138,7 +138,7 @@ static const uint8_t FAN_SPEED_PWM[10] = {
     0  // 10
 };
 
-static int currentSpeedLevel = 4; // стартовая скорость
+static int currentSpeedLevel = 4; // стартовая скорость кулера бп  <--------------------------
 
 // =====================================================
 // =============== ТИПЫ =================================
@@ -252,7 +252,7 @@ static const float LADDER_PULLUP = 10000.0f; // 10k к 3.3V
 static const float LADDER_R[6] = { 677.0f, 2000.0f, 3266.0f, 6782.0f, 19920.0f, 67430.0f };
 
 static const int LADDER_SAMPLES = 32;
-static const int LADDER_MARGIN = 260;     // допуск по RAW (если что — подправим)
+static const int LADDER_MARGIN = 260;     // допуск по RAW 
 static const int LADDER_NOISE_FLOOR = 80;
 
 // MQTT publish (СУЩЕСТВУЮЩИЕ НЕ ЛОМАЮ)
@@ -335,13 +335,13 @@ static int decodeButton12() {
 }
 
 static void handlePressEvent(int btn) {
-  mqttPublishPress(btn); // всегда (совместимость)
+  mqttPublishPress(btn); 
 
   uint32_t now = millis();
   uint32_t last = lastPressForDoubleMs[btn];
   if (last != 0 && (now - last) <= DOUBLE_WINDOW_MS) {
     mqttPublishDouble(btn);
-    lastPressForDoubleMs[btn] = 0; // сброс
+    lastPressForDoubleMs[btn] = 0; 
   } else {
     lastPressForDoubleMs[btn] = now;
   }
@@ -788,7 +788,7 @@ static void updateTopDynamic(bool forceAll) {
 // ================== DS18B20 (датчик БП) ==============
 // =====================================================
 
-static const char* T_PSU_TEMP_STATE = "esp32panel/psu/temp"; // НОВОЕ
+static const char* T_PSU_TEMP_STATE = "esp32panel/psu/temp"; 
 
 OneWire oneWire(PSU_TEMP_PIN);
 DallasTemperature psuSensors(&oneWire);
