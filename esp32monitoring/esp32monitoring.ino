@@ -138,7 +138,7 @@ static const uint8_t FAN_SPEED_PWM[10] = {
     0  // 10
 };
 
-static int currentSpeedLevel = 4; // стартовая скорость кулера бп  <--------------------------
+static int currentSpeedLevel = 4; 
 
 // =====================================================
 // =============== ТИПЫ =================================
@@ -1068,7 +1068,7 @@ void setup() {
     Serial.println("FAN PWM ATTACH FAILED");
   } else {
     Serial.println("FAN PWM ATTACH OK");
-    applySpeedLevel(7);
+    applySpeedLevel(4);   //<----------------Старотовая скорость кулера БП
   }
 
   // relays init (active LOW)
