@@ -74,6 +74,9 @@ static const char* T_RELAY4_STATE = "esp32panel/relay/4/state";
 // Спикер топик 
 static const char* T_SPK_PLAY = "esp32panel/speaker/play";
 
+// Availability (LWT) — для MQTT Discovery
+static const char* T_AVAILABILITY = "esp32panel/status";
+
 // Таймауты (онлайн по данным)
 static const uint32_t DATA_TIMEOUT_MS = 60000;
 
@@ -270,6 +273,17 @@ static void mqttPublishDouble(int btn) {
   mqtt.publish(topic, "DOUBLE", false);
 }
 
+// Публикация в формате MQTT "event"-сущности HA (одна сущность на кнопку,
+// видна как обычный entity, легко добавляется в автоматизацию по "Устройству").
+static void mqttPublishEvent(int btn, const char* eventType) {
+  if (!mqtt.connected()) return;
+  char topic[80];
+  snprintf(topic, sizeof(topic), "esp32panel/buttons/btn%d/event", btn);
+  char payload[48];
+  snprintf(payload, sizeof(payload), "{\"event_type\":\"%s\"}", eventType);
+  mqtt.publish(topic, payload, false);
+}
+
 // старые ADC чтения
 static int readAdcAvgSimple(int pin) {
   long s = 0;
@@ -335,12 +349,14 @@ static int decodeButton12() {
 }
 
 static void handlePressEvent(int btn) {
-  mqttPublishPress(btn); 
+  mqttPublishPress(btn);
+  mqttPublishEvent(btn, "press");
 
   uint32_t now = millis();
   uint32_t last = lastPressForDoubleMs[btn];
   if (last != 0 && (now - last) <= DOUBLE_WINDOW_MS) {
     mqttPublishDouble(btn);
+    mqttPublishEvent(btn, "double");
     lastPressForDoubleMs[btn] = 0; 
   } else {
     lastPressForDoubleMs[btn] = now;
@@ -748,7 +764,7 @@ static void updateColumnDynamic(int idx, const ServerData& s, const ServerData& 
 
   if (forceAll || s.tempC != p.tempC) {
     char buf[12];
-    snprintf(buf, sizeof(buf), "%dC", s.tempC);
+    snprintf(buf, sizeof(buf), "%2dC", s.tempC); // фикс. ширина — убирает артефакт на однозначных числах
     drawTextLine(valueX, y + tempLabelYoff, valueW, VALUE_H, buf);
 
     int tp = map(constrain(s.tempC, 20, 90), 20, 90, 0, 100);
@@ -757,14 +773,14 @@ static void updateColumnDynamic(int idx, const ServerData& s, const ServerData& 
 
   if (forceAll || s.cpu != p.cpu) {
     char buf[12];
-    snprintf(buf, sizeof(buf), "%d%%", s.cpu);
+    snprintf(buf, sizeof(buf), "%2d%%", s.cpu); // фикс. ширина — убирает артефакт на однозначных числах
     drawTextLine(valueX, y + cpuLabelYoff, valueW, VALUE_H, buf);
     drawBar(barX, y + cpuBarYoff, barW, barH, s.cpu, colByPctGood(s.cpu));
   }
 
   if (forceAll || s.ram != p.ram) {
     char buf[12];
-    snprintf(buf, sizeof(buf), "%d%%", s.ram);
+    snprintf(buf, sizeof(buf), "%2d%%", s.ram); // фикс. ширина — убирает артефакт на однозначных числах
     drawTextLine(valueX, y + ramLabelYoff, valueW, VALUE_H, buf);
     drawBar(barX, y + ramBarYoff, barW, barH, s.ram, colByPctGood(s.ram));
   }
@@ -785,6 +801,235 @@ static void updateTopDynamic(bool forceAll) {
 }
 
 // =====================================================
+// ================== MQTT DISCOVERY ====================
+// =====================================================
+// Все сущности объединяются в одно устройство HA через
+// одинаковый device.identifiers. Availability — через LWT
+// (T_AVAILABILITY), задаётся при mqtt.connect() в connectMqtt().
+
+static bool discoverySent = false;
+
+static String uidBase() {
+  String uid = "esp32panel_";
+  uid += String((uint32_t)ESP.getEfuseMac(), HEX);
+  return uid;
+}
+
+// Общий блок device — без обрамляющих кавычек-ключа, добавляется
+// последним полем в payload (без хвостовой запятой после него).
+static String deviceBlockJson() {
+  String d = "\"device\":{";
+  d += "\"identifiers\":[\"" + uidBase() + "\"],";
+  d += "\"name\":\"ESP32 Monitor Panel\",";
+  d += "\"manufacturer\":\"VITAZGIO\",";
+  d += "\"model\":\"ESP32 Dev Module\",";
+  d += "\"sw_version\":\"esp32monitoring\"";
+  d += "}";
+  return d;
+}
+
+static void publishDiscoveryConfig(const char* component, const char* objectId, const String& payload) {
+  char topic[96];
+  snprintf(topic, sizeof(topic), "homeassistant/%s/esp32panel/%s/config", component, objectId);
+  mqtt.publish(topic, payload.c_str(), true); // retain
+}
+
+// select: подсветка экрана (OFF/DIM/ON)
+static void discoverBrightness() {
+  String p = "{";
+  p += "\"name\":\"Подсветка экрана\",";
+  p += "\"unique_id\":\"" + uidBase() + "_brightness\",";
+  p += "\"command_topic\":\"" + String(T_BRIGHT_SET) + "\",";
+  p += "\"state_topic\":\"" + String(T_BRIGHT_STATE) + "\",";
+  p += "\"options\":[\"OFF\",\"DIM\",\"ON\"],";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += deviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("select", "brightness", p);
+}
+
+// number: скорость вентилятора БП (1..10)
+static void discoverFan() {
+  String p = "{";
+  p += "\"name\":\"Вентилятор БП\",";
+  p += "\"unique_id\":\"" + uidBase() + "_fan_speed\",";
+  p += "\"command_topic\":\"" + String(T_FAN_SET) + "\",";
+  p += "\"state_topic\":\"" + String(T_FAN_STATE) + "\",";
+  p += "\"min\":1,\"max\":10,\"step\":1,";
+  p += "\"icon\":\"mdi:fan\",";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += deviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("number", "fan_speed", p);
+}
+
+// switch x4: реле (ON/OFF; TOGGLE/PULSE остаются доступны напрямую в топик, HA видит только ON/OFF)
+static void discoverRelay(int idx, const char* name, const char* setTopic, const char* stateTopic) {
+  char objectId[24];
+  snprintf(objectId, sizeof(objectId), "relay_%d", idx + 1);
+
+  String p = "{";
+  p += "\"name\":\"" + String(name) + "\",";
+  p += "\"unique_id\":\"" + uidBase() + "_relay" + String(idx + 1) + "\",";
+  p += "\"command_topic\":\"" + String(setTopic) + "\",";
+  p += "\"state_topic\":\"" + String(stateTopic) + "\",";
+  p += "\"payload_on\":\"ON\",\"payload_off\":\"OFF\",";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += deviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("switch", objectId, p);
+}
+
+// select: звуки спикера (только команда, без состояния)
+static void discoverSpeaker() {
+  String p = "{";
+  p += "\"name\":\"Спикер\",";
+  p += "\"unique_id\":\"" + uidBase() + "_speaker\",";
+  p += "\"command_topic\":\"" + String(T_SPK_PLAY) + "\",";
+  p += "\"options\":[\"STOP\",\"MARIO\",\"STARWARS\",\"BEEP_2500\",\"SOFT_800\",\"ERROR_600\",\"NOTIFY\",\"BOOT\",\"WARN\",\"SUCCESS\"],";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += deviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("select", "speaker", p);
+}
+
+// event-сущность HA — физическая кнопка как обычная сущность
+// (Настройки → Устройства → ESP32 Monitor Panel → сущность "Кнопка N",
+// добавляется в автоматизацию через обычный выбор объекта/сущности).
+static void discoverButtonEvent(int i) {
+  char objectId[16];
+  snprintf(objectId, sizeof(objectId), "btn%d_event", i);
+
+  String topic = "esp32panel/buttons/btn" + String(i) + "/event";
+
+  String p = "{";
+  p += "\"name\":\"Кнопка " + String(i) + "\",";
+  p += "\"unique_id\":\"" + uidBase() + "_btn" + String(i) + "_event\",";
+  p += "\"state_topic\":\"" + topic + "\",";
+  p += "\"event_types\":[\"press\",\"double\"],";
+  p += "\"device_class\":\"button\",";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += deviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("event", objectId, p);
+}
+
+// Стираем старые нерабочие device_automation-конфиги (пустой retained payload
+// удаляет их из HA), чтобы не путали в интерфейсе.
+static void clearOldButtonTriggerDiscovery() {
+  for (int i = 1; i <= 12; i++) {
+    char objPress[24], objDouble[24];
+    snprintf(objPress,  sizeof(objPress),  "btn%d_press",  i);
+    snprintf(objDouble, sizeof(objDouble), "btn%d_double", i);
+    publishDiscoveryConfig("device_automation", objPress,  "");
+    publishDiscoveryConfig("device_automation", objDouble, "");
+  }
+}
+
+// 12 физических кнопок как event-сущности
+static void discoverButtons() {
+  clearOldButtonTriggerDiscovery();
+  for (int i = 1; i <= 12; i++) {
+    discoverButtonEvent(i);
+  }
+}
+
+// =====================================================
+// ============ ПОДСВЕТКА ПК (отдельное устройство) =====
+// =====================================================
+// Физически всё та же плата (тот же RF433 TX), но в HA это
+// отдельная карточка устройства — просто другой device.identifiers.
+// Коды сняты с пульта через приём на этой же плате (rf433/last_code).
+
+static String pcUidBase() {
+  String uid = "pcbacklight_";
+  uid += String((uint32_t)ESP.getEfuseMac(), HEX);
+  return uid;
+}
+
+static String pcDeviceBlockJson() {
+  String d = "\"device\":{";
+  d += "\"identifiers\":[\"" + pcUidBase() + "\"],";
+  d += "\"name\":\"Подсветка ПК\",";
+  d += "\"manufacturer\":\"VITAZGIO\",";
+  d += "\"model\":\"RF433 пульт (через ESP32 Monitor Panel)\",";
+  d += "\"sw_version\":\"esp32monitoring\"";
+  d += "}";
+  return d;
+}
+
+static void discoverPcButton(const char* objectId, const char* name, const char* cmdTopic, const char* payload) {
+  String p = "{";
+  p += "\"name\":\"" + String(name) + "\",";
+  p += "\"unique_id\":\"" + pcUidBase() + "_" + String(objectId) + "\",";
+  p += "\"command_topic\":\"" + String(cmdTopic) + "\",";
+  p += "\"payload_press\":\"" + String(payload) + "\",";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += pcDeviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("button", objectId, p);
+}
+
+// Свободный ввод произвольного RF-кода — на случай если понадобится
+// код, которого нет в списке заготовленных кнопок.
+static void discoverPcCustomCode() {
+  String p = "{";
+  p += "\"name\":\"Свой код\",";
+  p += "\"unique_id\":\"" + pcUidBase() + "_custom_code\",";
+  p += "\"command_topic\":\"" + String(TOPIC_TX) + "\",";
+  p += "\"mode\":\"text\",";
+  p += "\"icon\":\"mdi:remote\",";
+  p += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  p += pcDeviceBlockJson();
+  p += "}";
+  publishDiscoveryConfig("text", "custom_code", p);
+}
+
+static void discoverPcBacklight() {
+  discoverPcButton("on",           "Вкл",                TOPIC_TX, "9348097");
+  discoverPcButton("auto",         "AUTO",               TOPIC_TX, "9348098");
+  discoverPcButton("off",          "Выкл",               TOPIC_TX, "9348099");
+  discoverPcButton("s_plus",       "Скорость +",         TOPIC_TX, "9348100");
+  discoverPcButton("m_plus",       "Режим +",            TOPIC_TX, "9348101");
+  discoverPcButton("bright_plus",  "Ярк+",               TOPIC_TX, "9348102");
+  discoverPcButton("s_minus",      "Скорость -",         TOPIC_TX, "9348103");
+  discoverPcButton("m_minus",      "Режим -",            TOPIC_TX, "9348104");
+  discoverPcButton("bright_minus", "Ярк-",               TOPIC_TX, "9348105");
+  discoverPcButton("red",          "Красный",            TOPIC_TX, "9348106");
+  discoverPcButton("green",        "Зелёный",            TOPIC_TX, "9348107");
+  discoverPcButton("blue",         "Синий",              TOPIC_TX, "9348108");
+  discoverPcButton("yellow",       "Жёлтый",             TOPIC_TX, "9348109");
+  discoverPcButton("dark_yellow",  "Тёмно-жёлтый",       TOPIC_TX, "9348110");
+  discoverPcButton("orange",       "Оранжевый",          TOPIC_TX, "9348111");
+  discoverPcButton("dark_orange",  "Тёмно-оранжевый",    TOPIC_TX, "9348112");
+  discoverPcButton("cyan",         "Голубой",            TOPIC_TX, "9348113");
+  discoverPcButton("bright_cyan",  "Ярко-голубой",       TOPIC_TX, "9348114");
+  discoverPcButton("pink",         "Розовый",            TOPIC_TX, "9348115");
+  discoverPcButton("lime",         "Салатовый",          TOPIC_TX, "9348116");
+  discoverPcButton("white",        "Белый",              TOPIC_TX, "9348117");
+  // удержание (переключение режима) — отдельный топик, код совпадает с "Вкл"
+  discoverPcButton("mode_hold", "Переключение режима (удержание)", TOPIC_HOLD97, "1");
+  discoverPcCustomCode();
+}
+
+static void publishDiscoveryAll() {
+  if (!mqtt.connected() || discoverySent) return;
+
+  discoverBrightness();
+  discoverFan();
+  discoverRelay(0, "Реле 1", T_RELAY1_SET, T_RELAY1_STATE);
+  discoverRelay(1, "Реле 2", T_RELAY2_SET, T_RELAY2_STATE);
+  discoverRelay(2, "Реле 3", T_RELAY3_SET, T_RELAY3_STATE);
+  discoverRelay(3, "Реле 4", T_RELAY4_SET, T_RELAY4_STATE);
+  discoverSpeaker();
+  discoverButtons();
+  discoverPcBacklight();
+  // psuPublishDiscovery() публикует сама себя ниже, при первом psuTick()
+
+  discoverySent = true;
+}
+
+// =====================================================
 // ================== DS18B20 (датчик БП) ==============
 // =====================================================
 
@@ -799,23 +1044,21 @@ static bool psuDiscoverySent = false;
 static void psuPublishDiscovery() {
   if (!mqtt.connected() || psuDiscoverySent) return;
 
-  String uid = "esp32panel_psu_temp_";
-  uid += String((uint32_t)ESP.getEfuseMac(), HEX);
-
-  // фиксированный discovery topic (retained)
-  const char* topic = "homeassistant/sensor/esp32panel/psu_temp/config";
+  String uid = uidBase() + "_psu_temp";
 
   String payload = "{";
-  payload += "\"name\":\"датчик бп\",";
+  payload += "\"name\":\"Датчик БП\",";
   payload += "\"unique_id\":\"" + uid + "\",";
   payload += "\"state_topic\":\"" + String(T_PSU_TEMP_STATE) + "\",";
   payload += "\"unit_of_measurement\":\"°C\",";
   payload += "\"device_class\":\"temperature\",";
   payload += "\"state_class\":\"measurement\",";
-  payload += "\"expire_after\":120";
+  payload += "\"expire_after\":120,";
+  payload += "\"availability_topic\":\"" + String(T_AVAILABILITY) + "\",";
+  payload += deviceBlockJson();
   payload += "}";
 
-  mqtt.publish(topic, payload.c_str(), true);
+  publishDiscoveryConfig("sensor", "psu_temp", payload);
   psuDiscoverySent = true;
 }
 
@@ -994,7 +1237,17 @@ static bool connectMqtt() {
   String cid = "esp32panel-mrsrfbtn-";
   cid += String((uint32_t)ESP.getEfuseMac(), HEX);
 
-  if (!mqtt.connect(cid.c_str())) return false;
+  // LWT: если ESP пропадёт (сядет питание/зависнет) — брокер сам
+  // опубликует "offline" в T_AVAILABILITY, и HA пометит все сущности
+  // устройства недоступными.
+  bool ok = mqtt.connect(
+    cid.c_str(),
+    nullptr, nullptr,           // без логина/пароля
+    T_AVAILABILITY, 0, true, "offline"
+  );
+  if (!ok) return false;
+
+  mqtt.publish(T_AVAILABILITY, "online", true);
 
   // monitor
   mqtt.subscribe(T_OP_TEMP);
@@ -1033,8 +1286,11 @@ static bool connectMqtt() {
   publishRelayState(3);
   publishFanState();
 
-  // DS18B20 discovery
+  // MQTT Discovery — публикуем retained-конфиги заново при каждом
+  // новом коннекте (например, после ребута HA конфиги подхватятся сразу)
+  discoverySent = false;
   psuDiscoverySent = false;
+  publishDiscoveryAll();
   psuPublishDiscovery();
 
   return true;
@@ -1105,7 +1361,7 @@ void setup() {
   psuNextReadMs = millis() + 500;
 
   // MQTT
-  mqtt.setBufferSize(512);
+  mqtt.setBufferSize(768); // конфиги с блоком device не влезали в 512
   connectWifi();
 
   Serial.println("READY");
@@ -1129,7 +1385,6 @@ void loop() {
   } else {
     connectMqtt();
     mqtt.loop();
-    psuPublishDiscovery();
   }
 
   // ================= HOLD97 =================
@@ -1272,4 +1527,3 @@ void loop() {
 
   delay(5);
 }
-
